@@ -1,24 +1,8 @@
-```python
-from functools import partial
-import pickle
-
-import jax
-import jax.numpy as jnp
-import numpy as np
-import matplotlib.pyplot as plt
-import optax
-import scipy
-from transformers import AutoTokenizer, FlaxAutoModelForCausalLM
-
-from jax_gptq import use_quantized, quantize_param_to_code
-%matplotlib inline
-```
-
 # NF4 isn't theoretically optimal!
 
 The [QLora Paper](https://arxiv.org/abs/2305.14314) was just released, and it has a bunch of really impressive empirical work and tool releases. If you haven't checked it out yet, you should do that before reading this.
 
-I have one minor gripe about the paper, which is that they repeatedly describe the new NF4 data type as:
+I have one minor gripe about the paper, which is that they repeatedly (this phrase appears 6 times in the paper) describe the new NF4 data type as:
 
 > an information theoretically optimal quantization data type
 
@@ -35,36 +19,18 @@ So based on this with a slight tweak, the 16 NF4 values [are computed as follows
 3. Add 7 points evenly spaced between CDF values of `1 - 0.9677083` and `0.5` (exclude the right endpoint)
 4. Scale the code down by its maximum so that it lives in $[-1, 1]$, since when we quantize actual weights we'll be scaling them down by their absolute value
 
-Below are the values from the paper, let's verify the recipe above by reconstructing them:
-
+This results in the following values:
 
 ```python
 NF4 = np.asarray([-1.0, -0.6961928009986877, -0.5250730514526367, -0.39491748809814453, -0.28444138169288635, -0.18477343022823334, -0.09105003625154495, 0.0, 0.07958029955625534, 0.16093020141124725, 0.24611230194568634, 0.33791524171829224, 0.44070982933044434, 0.5626170039176941, 0.7229568362236023, 1.0])
 ```
 
-
-```python
-code = [0]
-offset = 0.9677083
-for pval in np.linspace(1 - offset, 0.5, 8)[:-1]:
-    code.append(scipy.stats.norm.ppf(pval))
-for pval in np.linspace(0.5, offset, 9)[1:]:
-    code.append(scipy.stats.norm.ppf(pval))
-
-code.sort()
-code = np.asarray(code)
-code /= np.max(np.abs(code))
-print(np.abs(code - NF4).max()) # looks good
-```
-
-    1.0833072017213397e-07
-
-
 ### The problem
-Everything seems very theoretically optimal, so what's the problem here? Neural network weights are approximately normally distributed, but neural network weights downscaled to have a maximum absolute value of 1 _definitely aren't_.
+So what's wrong with the argument above? The issue is that while neural network weights are approximately normally distributed, _neural network weights downscaled to have a maximum absolute value of 1 definitely aren't_.
 
-Let's demonstrate that by looking at what the density in $[-1, 1]$ looks like for a variety of block sizes:
+Since this is the crux of the issue, let me remind you that the "block size" parameter controls how big the groups of parameters that get quantized together are. For each such group you calculate the maximum absolute value, then scale the whole group down by that amount, leading to a set of numbers in $[-1, 1]$ which you can then quantize by just assigning them to the nearest code value.
 
+To see that this process doesn't give you a fixed normal distribution, you can just look at how those values end up for a variety of block sizes:
 
 ```python
 batch_size = 2 ** 12
@@ -129,12 +95,12 @@ for block_size in (16, 32, 128, 1024, 4096):
     
 
 
-The distribution clearly varies with block size, so there can't be a single code which is simultaneously optimal for all block sizes! The weird spikes on the ends aren't artifacts, they're due to the fact that it's guaranteed that at least one sample will take the value -1 or 1 after scaling. I was curious whether this converged to some well-known distribution on [-1, 1], so I [asked](https://stats.stackexchange.com/questions/616752/does-the-following-distribution-converge-to-anything/616846#616846) stats.SE and it converges (slowly) to a point mass on 0.
+The distribution clearly varies with block size, so it can't be the case that NF4 is simultaneously optimal for all of them! The weird spikes on the ends aren't artifacts, they're due to the fact that it's guaranteed that at least one sample will take the value -1 or 1 after scaling. I was curious whether this converged to some well-known distribution, so I [asked](https://stats.stackexchange.com/questions/616752/does-the-following-distribution-converge-to-anything/616846#616846) stats.SE. It turns out that it just slowly converges to a point mass on 0, meaning that at very large block sizes the outer code values will be mostly unused.
 
 Due to this, the NF4 code can't be optimal for this setting, since for large enough block sizes almost all the values will get mapped to 0! What went wrong in their reasoning? I think the issue is that their analysis is correct if you have a fixed scale factor, but not if it's data dependent, leading to a worse and worse relationship to the typical spread of your values as you increase the block size.
 
 ## Searching for block-size dependent codes
-Prior to the QLora release, I was trying to guess what the NF4 type might be based on random tidbits. Since I'm an ML researcher in 2023, I just tried to minimize the squared quantization error with Adam. That worked okay, but not amazingly, so I switched to optimizing absolute error instead:
+Prior to the QLora release, I was trying to guess what the NF4 type might be based on random tidbits. Since I'm an ML researcher in 2023, I just tried to minimize the squared quantization error with Adam. That worked okay, but not amazingly. Switching to minimizing absolute error instead gave me much better results:
 
 
 ```python
@@ -177,7 +143,7 @@ def optimization_based_code(block_size, loss_fn=loss_fn):
     return code
 ```
 
-Now let's get a code which minimizes this loss and compare it to the NF4 code:
+Now let's see how this code compares to the NF4 one.
 
 
 ```python
@@ -209,10 +175,9 @@ compare_codes({'NF4': NF4, 'Optimization based, block size 64': bs64_optimized_c
 
 The above plot shows the values that each code can represent.
 
-As you can see they look pretty similar, with the main difference being that NF4 requires that -1, 1 and 0 be in the code. In my brief experiments, not "pinning" those three values into the code was deterimental. One possible explanation is that it's guaranteed that at least one value will be -1 and 1 in each bloc. Even more confusingly I found that requiring -1.05 and 1.05 to be in the code _also_ worked, and those values can't occur in the downscaled parameters.
+As you can see they look pretty similar, with the main difference being that NF4 requires that -1, 1 and 0 be in the code. In my brief experiments, not "pinning" those three values into the code was deterimental. One possible explanation is that it's guaranteed that at least one value will be -1 and 1 in each bloc. Even more confusingly I found that requiring -1.05 and 1.05 to be in the code _also_ worked (slightly better even), despite the fact that those values can't occur in the downscaled parameters.
 
-At any rate, we can just switch the loss function to not update these three values:
-
+At any rate, it's easy to replace the loss function to prevent those three values from getting modified:
 
 ```python
 def pinned_loss_fn(code, sample):
@@ -259,11 +224,10 @@ for block_size in (64, 128, 1024, 4096):
     Step 4000 loss: 2.213e-02
     Step 5000 loss: 2.214e-02
 
+It's probably smarter to get these codes by estimating the quantiles of the "scaled down normal" distribution rather than using Adam but this is what I happened to implement and I'm just rushing this notebook out so I can move on to doing other stuff.
 
 ### NF4 seems to be pretty good for small block sizes
-Comparing the codes optimized for block sizes of 64, we can see that NF4 is pretty similar to the block size 64 one, but as expected is very different from the optimum for block size 4096.
-
-It's probably smarter to get these codes by estimating the quantiles of the "scaled down normal" distribution rather than using Adam but this is what I happened to implement and I'm just rushing this notebook out so I can move on to doing other stuff.
+Comparing the codes optimized for block sizes of 64, we can see that NF4 is pretty similar to the block size 64 one, but as expected is very different from the optimum for block size 4096:
 
 
 ```python
@@ -284,7 +248,7 @@ compare_codes({'Optim. BS = 4096': optimized_codes[4096], 'NF4': NF4})
 
 
 ## Testing the codes
-Since what we actually care about is how well these work for quantizing actual neural networks, I ran some comparisons between using NF4, these block-size specific codes, and uniform quantization as a baseline. If you don't care about the implementation just scroll down to the bottom for a summary.
+Since what we actually care about is how well these work for quantizing actual neural networks, I ran some comparisons between using NF4 and these block-size specific codes to quantize models and see how much their output changes. If you don't care about the implementation just scroll down to the bottom for a summary.
 
 
 ```python
