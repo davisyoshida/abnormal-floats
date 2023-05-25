@@ -1,5 +1,7 @@
 # NF4 isn't theoretically optimal!
 
+tl;dr: The distribution being quantized depends on the quantization block size, so there can't be a single optimal code which covers all block sizes.
+
 The [QLora Paper](https://arxiv.org/abs/2305.14314) was just released, and it has a bunch of really impressive empirical work and tool releases. If you haven't checked it out yet, you should do that before reading this.
 
 I have one minor gripe about the paper, which is that they repeatedly (this phrase appears 6 times in the paper) describe the new NF4 data type as:
