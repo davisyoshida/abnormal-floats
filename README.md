@@ -1,4 +1,5 @@
 # NF4 isn't theoretically optimal!
+by [Davis Yoshida](https://twitter.com/davis_yoshida)
 
 tl;dr: The distribution being quantized depends on the quantization block size, so there can't be a single optimal code which covers all block sizes.
 
