@@ -1,0 +1,3 @@
+qax @ git+https://github.com/davisyoshida/qax@f7bb74ad9e9991b5da4a7a0ad9ca7ea06ef4d362
+flax
+transformers
