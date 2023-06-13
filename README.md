@@ -1,4 +1,4 @@
-This repo contains the code for generating and using the AF4 code as described in (TODO).
+This repo contains the code for generating AF4 codes described in [this note](https://arxiv.org/abs/2306.06965). It also contains a a JAX transform which allows for quantizing arbitrary JAX models with new 4-bit codes.
 
 ### Generating codes
 The script `generate_af4.py` will produce the AF4 code for a variety of block sizes. It's really slow to run since a ton of numerical integration is needed, so you may want to swap in the approximate CDF as described in the appendix.
