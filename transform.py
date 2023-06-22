@@ -3,6 +3,8 @@ JAX code for absmax based blockwise quantization.This doesn't use a custom matmu
 matrices are simply unpacked prior to use. This should be useful for ease of iteration
 in quantization research, but shouldn't be used if latency is critical.
 """
+
+from dataclasses import dataclass
 from functools import partial
 from itertools import chain
 
@@ -12,27 +14,16 @@ import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer, FlaxAutoModelForCausalLM
 
-from qax import use_implicit_args, ImplicitArray
+from qax import use_implicit_args, ImplicitArray, aux_field
 
+@dataclass
 class CodeQuantMatrix(ImplicitArray):
-    def __init__(self, int_weight, absmaxes, code, *, block_size, contraction_axis, orig_shape, dtype):
-        super().__init__(orig_shape, dtype)
-        self.int_weight = int_weight
-        self.absmaxes = absmaxes
-        self.code = code
-        self.block_size = block_size
-        self.contraction_axis = contraction_axis
+    int_weight : jax.Array
+    absmaxes : jax.Array
+    code : jax.Array
 
-    def flatten(self):
-        return [
-            ('int_weight', self.int_weight),
-            ('absmaxes', self.absmaxes),
-            ('code', self.code),
-        ], (self.block_size, self.contraction_axis)
-
-    def unflatten(self, aux_data, children):
-        self.int_weight, self.absmaxes, self.code = children
-        self.block_size, self.contraction_axis = aux_data
+    block_size : int = aux_field()
+    contraction_axis : int = aux_field()
 
     def materialize(self):
         return dequantize(
@@ -88,7 +79,7 @@ def quantize(weight, code, block_size, contraction_axis):
         code=code,
         block_size=block_size,
         contraction_axis=contraction_axis,
-        orig_shape=orig_shape,
+        shape=orig_shape,
         dtype=dtype,
     )
 
