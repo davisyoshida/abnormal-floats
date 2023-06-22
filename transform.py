@@ -126,7 +126,7 @@ def main():
     model_name = 'EleutherAI/gpt-neo-2.7B'
     block_size = 32
 
-    # Most Flax models do left multiplication (i.e. activations @ W), so the contractoin
+    # Most Flax models do left multiplication (i.e. activations @ W), so the contraction
     # axis is 0. For GPT-2 in particular it should be set to 1.
     contraction_axis = 0
     code = jnp.asarray(np.load(f'af4_{block_size}.npy'))
